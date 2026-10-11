@@ -1,0 +1,128 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Telegram user. All money amounts are stored in kopecks (1 UAH = 100).
+model User {
+  id             String    @id @default(uuid())
+  telegramId     BigInt    @unique
+  username       String?
+  firstName      String?
+  ageConfirmedAt DateTime?
+  balance        Int       @default(0)
+  isBlocked      Boolean   @default(false)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  calls        Call[]
+  transactions Transaction[]
+  payments     Payment[]
+}
+
+enum TransactionType {
+  TOPUP
+  CALL_CHARGE
+  REFUND
+  ADMIN_ADJUSTMENT
+}
+
+/// Append-only balance ledger. `amount` is signed: + credit, - debit.
+model Transaction {
+  id        String          @id @default(uuid())
+  userId    String
+  user      User            @relation(fields: [userId], references: [id])
+  type      TransactionType
+  amount    Int
+  callId    String?
+  paymentId String?
+  comment   String?
+  createdAt DateTime        @default(now())
+
+  /// One refund per call — the DB guarantees we never refund twice.
+  @@unique([callId, type])
+  @@index([userId, createdAt])
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+model Payment {
+  id          String        @id @default(uuid())
+  userId      String
+  user        User          @relation(fields: [userId], references: [id])
+  amount      Int
+  status      PaymentStatus @default(PENDING)
+  provider    String        @default("liqpay")
+  providerRef String?
+  rawStatus   String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+enum CallStatus {
+  QUEUED // charged and waiting in BullMQ
+  DIALING // accepted by the voice provider
+  COMPLETED // a human answered and talked
+  NO_ANSWER // busy / no-answer / nobody spoke
+  VOICEMAIL // answering machine detected
+  FAILED // provider error
+}
+
+model Call {
+  id                String     @id @default(uuid())
+  userId            String
+  user              User       @relation(fields: [userId], references: [id])
+  toNumber          String
+  scenarioKey       String?
+  customTopic       String?
+  customerName      String
+  price             Int
+  status            CallStatus @default(QUEUED)
+  providerCallId    String?    @unique
+  durationSec       Int?
+  transcript        Json?
+  summary           String?
+  terminationReason String?
+  optOut            Boolean    @default(false)
+  machineDetected   Boolean    @default(false)
+  refunded          Boolean    @default(false)
+  recordingSent     Boolean    @default(false)
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+  finishedAt        DateTime?
+
+  @@index([toNumber, createdAt])
+  @@index([status])
+}
+
+enum BlockReason {
+  OPT_OUT
+  ADMIN
+}
+
+/// Numbers we must never call. OPT_OUT entries are permanent.
+model BlockedNumber {
+  phone     String      @id
+  reason    BlockReason
+  comment   String?
+  createdAt DateTime    @default(now())
+}
+
+/// Audit trail of moderation decisions for custom topics.
+model ModerationLog {
+  id        String   @id @default(uuid())
+  userId    String
+  text      String
+  allowed   Boolean
+  category  String?
+  reason    String?
+  createdAt DateTime @default(now())
+}
